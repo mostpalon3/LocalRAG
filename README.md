@@ -111,6 +111,14 @@ Search for information using a query string.
 python main.py query "What is the opening year of The Lagoon Breeze Hotel?"
 ```
 
+#### Run the Streamlit Chatbot
+
+Launch the chat UI in your browser.
+
+```bash
+streamlit run streamlit_app.py
+```
+
 #### Evaluate the Model
 
 Use a JSON file (with question/answer pairs) to evaluate the response quality.
