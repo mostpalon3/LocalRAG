@@ -1,6 +1,6 @@
 import os
 import sys
-import tempfile
+import json
 from typing import List
 
 import streamlit as st
@@ -62,6 +62,30 @@ pipeline = create_pipeline()
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+if "evaluation_results" not in st.session_state:
+    st.session_state.evaluation_results = None
+
+
+def load_evaluation_items(raw_text: str):
+    items = json.loads(raw_text)
+    if not isinstance(items, list):
+        raise ValueError("Evaluation input must be a JSON list of question/answer objects.")
+
+    normalized_items = []
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"Item {index} must be an object with 'question' and 'answer' keys.")
+
+        question = item.get("question", "").strip()
+        answer = item.get("answer", "").strip()
+
+        if not question or not answer:
+            raise ValueError(f"Item {index} must include non-empty 'question' and 'answer' values.")
+
+        normalized_items.append({"question": question, "answer": answer})
+
+    return normalized_items
+
 with st.sidebar:
     st.header("Controls")
     source_path = st.text_input("Documents path", value=DEFAULT_SOURCE_PATH)
@@ -101,6 +125,44 @@ with st.sidebar:
         st.session_state.messages = []
         st.rerun()
 
+    st.divider()
+    st.header("Dynamic Evaluation")
+    st.caption("Paste a JSON list with question and answer fields, or upload a .json file.")
+
+    eval_upload = st.file_uploader(
+        "Upload evaluation JSON",
+        type=["json"],
+        accept_multiple_files=False,
+        key="evaluation_json_upload",
+    )
+
+    eval_text = st.text_area(
+        "Or paste evaluation JSON",
+        value="",
+        height=220,
+        placeholder='''[
+  {"question": "Your question here", "answer": "Expected answer here"}
+]''',
+    )
+
+    if st.button("Run evaluation", use_container_width=True):
+        try:
+            if eval_upload is not None:
+                raw_eval_text = eval_upload.getvalue().decode("utf-8")
+            else:
+                raw_eval_text = eval_text
+
+            if not raw_eval_text.strip():
+                st.warning("Provide evaluation JSON by uploading a file or pasting it into the text area.")
+            else:
+                evaluation_items = load_evaluation_items(raw_eval_text)
+                with st.spinner("Running evaluation..."):
+                    results = pipeline.evaluate(evaluation_items)
+                st.session_state.evaluation_results = results
+                st.success(f"Completed evaluation for {len(results)} item(s).")
+        except Exception as error:
+            st.error(f"Evaluation failed: {error}")
+
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
@@ -118,3 +180,18 @@ if user_prompt:
         st.markdown(response)
 
     st.session_state.messages.append({"role": "assistant", "content": response})
+
+
+if st.session_state.evaluation_results:
+    st.divider()
+    st.subheader("Latest Evaluation Results")
+    results = st.session_state.evaluation_results
+    score = sum(result.is_correct for result in results)
+    st.metric("Score", f"{score}/{len(results)}")
+
+    for result in results:
+        status = "✅ Correct" if result.is_correct else "❌ Incorrect"
+        with st.expander(f"{status} - {result.question}"):
+            st.markdown(f"**Response:** {result.response}")
+            st.markdown(f"**Expected answer:** {result.expected_answer}")
+            st.markdown(f"**Reasoning:** {result.reasoning}")
