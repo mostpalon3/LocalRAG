@@ -69,10 +69,11 @@ class Indexer(BaseIndexer):
     ) -> List[DataItem]:
         items = []
         source_prefix = os.path.abspath(document_path)
+        file_label = self._document_label(document_path)
         for i, chunk in enumerate(chunks):
             headings = ", ".join(chunk.meta.headings) if chunk.meta.headings else ""
             content_headings = "## " + headings if headings else "##"
-            content_text = f"{content_headings}\n{chunk.text}"
+            content_text = f"{content_headings}\n## File: {file_label}\n{chunk.text}"
             source = f"{source_prefix}:{i}"
             item = DataItem(content=content_text, source=source)
             items.append(item)
@@ -84,19 +85,74 @@ class Indexer(BaseIndexer):
         if not text:
             return []
 
-        max_characters = max(1, MAX_TOKENS * 4)
-        text_chunks = [
-            text[start : start + max_characters]
-            for start in range(0, len(text), max_characters)
-        ]
+        max_characters = max(600, MAX_TOKENS * 3)
+        text_chunks = self._split_text_into_chunks(text, max_characters=max_characters)
         source_prefix = os.path.abspath(document_path)
-        file_name = Path(document_path).name
 
         return [
             DataItem(
-                content=f"## {file_name}\n{chunk_text}",
-                source=f"{source_prefix}:{index}",
+                content=(
+                    f"## File: {self._document_label(document_path)}\n"
+                    f"## Lines: {start_line}-{end_line}\n"
+                    f"{chunk_text}"
+                ),
+                source=f"{source_prefix}:{start_line}-{end_line}",
             )
-            for index, chunk_text in enumerate(text_chunks)
+            for chunk_text, start_line, end_line in text_chunks
         ]
+
+    def _document_label(self, document_path: str) -> str:
+        path = Path(document_path)
+        try:
+            return path.resolve().relative_to(Path.cwd().resolve()).as_posix()
+        except ValueError:
+            return path.name
+
+    def _split_text_into_chunks(
+        self, text: str, max_characters: int, overlap_lines: int = 8
+    ) -> List[tuple[str, int, int]]:
+        lines = text.splitlines()
+        if not lines:
+            return []
+
+        chunks: List[tuple[str, int, int]] = []
+        start_index = 0
+        total_lines = len(lines)
+
+        while start_index < total_lines:
+            end_index = start_index
+            current_length = 0
+
+            while end_index < total_lines:
+                line = lines[end_index]
+                line_length = len(line) + 1
+
+                if current_length and current_length + line_length > max_characters:
+                    break
+
+                current_length += line_length
+                end_index += 1
+
+                if current_length >= max_characters:
+                    break
+
+            if end_index == start_index:
+                line = lines[start_index]
+                for chunk_start in range(0, len(line), max_characters):
+                    chunk_text = line[chunk_start : chunk_start + max_characters].strip()
+                    if chunk_text:
+                        chunks.append((chunk_text, start_index + 1, start_index + 1))
+                start_index += 1
+                continue
+
+            chunk_text = "\n".join(lines[start_index:end_index]).strip()
+            if chunk_text:
+                chunks.append((chunk_text, start_index + 1, end_index))
+
+            if end_index >= total_lines:
+                break
+
+            start_index = max(end_index - overlap_lines, start_index + 1)
+
+        return chunks
 
