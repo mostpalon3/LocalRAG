@@ -249,6 +249,7 @@ export OLLAMA_EMBED_DIMENSIONS='768'
 The script creates or reuses `.venv`, installs dependencies, pulls `qwen3:8b` and `nomic-embed-text`, then starts Streamlit.
 
 The indexer prioritizes raw-text reading for code, config, markdown, and other text files, and falls back to docling/OCR for richer document formats. Streamlit uploads also accept `.zip` archives and unpack them before indexing.
+Chat messages are persisted in SQLite at `data/chat_history.sqlite3`, and the UI supports creating and switching between multiple saved chats.
 
 ### Index your own documents
 

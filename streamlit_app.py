@@ -17,6 +17,16 @@ if str(SRC_DIR) not in sys.path:
 
 from rag_pipeline import RAGPipeline
 from impl import Datastore, Indexer, Retriever, ResponseGenerator, Evaluator
+from util.chat_history_store import (
+    append_chat_message,
+    create_chat,
+    clear_chat_messages,
+    DEFAULT_CHAT_TITLE,
+    get_latest_chat_id,
+    list_chats,
+    load_chat_messages,
+    set_chat_title,
+)
 from util.extract_content import extract_image_text, is_image_file
 from util.file_discovery import collect_files
 
@@ -105,8 +115,16 @@ st.caption("A local RAG chatbot powered by Ollama, LanceDB, and Streamlit.")
 
 pipeline = create_pipeline()
 
+if "current_chat_id" not in st.session_state:
+    latest_chat_id = get_latest_chat_id()
+    st.session_state.current_chat_id = latest_chat_id if latest_chat_id else create_chat()
+
+if "loaded_chat_id" not in st.session_state or st.session_state.loaded_chat_id != st.session_state.current_chat_id:
+    st.session_state.messages = load_chat_messages(st.session_state.current_chat_id)
+    st.session_state.loaded_chat_id = st.session_state.current_chat_id
+
 if "messages" not in st.session_state:
-    st.session_state.messages = []
+    st.session_state.messages = load_chat_messages(st.session_state.current_chat_id)
 
 if "evaluation_results" not in st.session_state:
     st.session_state.evaluation_results = None
@@ -136,6 +154,45 @@ with st.sidebar:
     st.header("Controls")
     source_path = st.text_input("Documents path", value=DEFAULT_SOURCE_PATH)
     top_note = st.info("Reset the index before re-adding documents if you change embeddings.")
+
+    st.subheader("Chats")
+    chats = list_chats()
+    if not chats:
+        st.session_state.current_chat_id = create_chat()
+        st.session_state.loaded_chat_id = st.session_state.current_chat_id
+        chats = list_chats()
+
+    chat_options = [chat["id"] for chat in chats]
+    if st.session_state.current_chat_id not in chat_options:
+        st.session_state.current_chat_id = chat_options[0]
+
+    chat_labels = {
+        chat["id"]: f'{chat["title"]} ({chat["message_count"]} msgs)'
+        for chat in chats
+    }
+
+    if st.button("New chat", use_container_width=True):
+        st.session_state.current_chat_id = create_chat()
+        st.session_state.loaded_chat_id = st.session_state.current_chat_id
+        st.session_state.messages = []
+        st.rerun()
+
+    selected_chat_id = st.selectbox(
+        "Conversation",
+        options=chat_options,
+        index=chat_options.index(st.session_state.current_chat_id),
+        format_func=lambda chat_id: chat_labels.get(chat_id, chat_id),
+        key="chat_selector",
+    )
+
+    if selected_chat_id != st.session_state.current_chat_id:
+        st.session_state.current_chat_id = selected_chat_id
+        st.session_state.loaded_chat_id = selected_chat_id
+        st.session_state.messages = load_chat_messages(selected_chat_id)
+        st.rerun()
+
+    active_chat = next((chat for chat in chats if chat["id"] == st.session_state.current_chat_id), None)
+    active_chat_title = active_chat["title"] if active_chat else DEFAULT_CHAT_TITLE
 
     st.subheader("System Info")
     st.metric("Documents Indexed", pipeline.get_document_count())
@@ -182,6 +239,7 @@ with st.sidebar:
 
     if st.button("Clear chat", use_container_width=True):
         st.session_state.messages = []
+        clear_chat_messages(st.session_state.current_chat_id)
         st.rerun()
 
     st.divider()
@@ -230,6 +288,9 @@ user_prompt = st.chat_input("Ask a question about the indexed documents")
 
 if user_prompt:
     st.session_state.messages.append({"role": "user", "content": user_prompt})
+    append_chat_message(st.session_state.current_chat_id, "user", user_prompt)
+    if active_chat_title == DEFAULT_CHAT_TITLE:
+        set_chat_title(st.session_state.current_chat_id, user_prompt)
     with st.chat_message("user"):
         st.markdown(user_prompt)
 
@@ -252,6 +313,7 @@ if user_prompt:
             st.caption(chunk.content[:300] + ("..." if len(chunk.content) > 300 else ""))
 
     st.session_state.messages.append({"role": "assistant", "content": full_response})
+    append_chat_message(st.session_state.current_chat_id, "assistant", full_response)
 
 
 if st.session_state.evaluation_results:
