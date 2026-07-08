@@ -5,6 +5,7 @@ import zipfile
 from pathlib import Path
 from typing import List
 
+# pyrefly: ignore [missing-import]
 import streamlit as st
 
 from config import DB_PATH, EMBED_MODEL, LLM_MODEL
@@ -15,19 +16,25 @@ SRC_DIR = ROOT_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+# pyrefly: ignore [missing-import]
 from rag_pipeline import RAGPipeline
+# pyrefly: ignore [missing-import]
 from impl import Datastore, Indexer, Retriever, ResponseGenerator, Evaluator
+# pyrefly: ignore [missing-import]
 from util.chat_history_store import (
     append_chat_message,
     create_chat,
     clear_chat_messages,
+    delete_chat,
     DEFAULT_CHAT_TITLE,
     get_latest_chat_id,
     list_chats,
     load_chat_messages,
     set_chat_title,
 )
+# pyrefly: ignore [missing-import]
 from util.extract_content import extract_image_text, is_image_file
+# pyrefly: ignore [missing-import]
 from util.file_discovery import collect_files
 
 
@@ -177,6 +184,18 @@ with st.sidebar:
         st.session_state.messages = []
         st.rerun()
 
+    if st.button("🗑️ Delete chat", use_container_width=True):
+        chat_id_to_delete = st.session_state.current_chat_id
+        delete_chat(chat_id_to_delete)
+        remaining = list_chats()
+        if remaining:
+            st.session_state.current_chat_id = remaining[0]["id"]
+        else:
+            st.session_state.current_chat_id = create_chat()
+        st.session_state.loaded_chat_id = st.session_state.current_chat_id
+        st.session_state.messages = load_chat_messages(st.session_state.current_chat_id)
+        st.rerun()
+
     selected_chat_id = st.selectbox(
         "Conversation",
         options=chat_options,
@@ -241,6 +260,8 @@ with st.sidebar:
         st.session_state.messages = []
         clear_chat_messages(st.session_state.current_chat_id)
         st.rerun()
+
+
 
     st.divider()
     st.header("Dynamic Evaluation")

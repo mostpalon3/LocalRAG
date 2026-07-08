@@ -190,6 +190,13 @@ def clear_chat_messages(chat_id: str) -> None:
         )
 
 
+def delete_chat(chat_id: str) -> None:
+    initialize_chat_history_store()
+    with _connect() as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
+
+
 def set_chat_title(chat_id: str, title: str) -> None:
     initialize_chat_history_store()
     clean_title = title.strip()[:80] or DEFAULT_CHAT_TITLE
