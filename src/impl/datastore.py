@@ -1,24 +1,24 @@
-from typing import List
 import os
-from interface.base_datastore import BaseDatastore, DataItem
+from typing import List
+
 import lancedb
-from lancedb.table import Table
 import pyarrow as pa
 import ollama
+from lancedb.table import Table
 from concurrent.futures import ThreadPoolExecutor
+
+from config import DB_PATH, EMBED_DIMENSIONS, EMBED_MODEL, OLLAMA_URL
+from interface.base_datastore import BaseDatastore, DataItem
 
 
 class Datastore(BaseDatastore):
-
-    DB_PATH = "data/sample-lancedb"
     DB_TABLE_NAME = "rag-table"
 
     def __init__(self):
-        self.vector_dimensions = int(os.getenv("OLLAMA_EMBED_DIMENSIONS", "768"))
-        self.ollama_client = ollama.Client(
-            host=os.getenv("OLLAMA_HOST", "http://localhost:11434")
-        )
-        self.embed_model = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+        self.vector_dimensions = EMBED_DIMENSIONS
+        self.ollama_client = ollama.Client(host=OLLAMA_URL)
+        self.embed_model = EMBED_MODEL
+        self.DB_PATH = DB_PATH
         self.vector_db = lancedb.connect(self.DB_PATH)
         self.table: Table = self._get_table()
 
@@ -61,7 +61,7 @@ class Datastore(BaseDatastore):
             "source"
         ).when_matched_update_all().when_not_matched_insert_all().execute(entries)
 
-    def search(self, query: str, top_k: int = 5) -> List[str]:
+    def search(self, query: str, top_k: int = 5) -> List[DataItem]:
         vector = self.get_vector(query)
         results = (
             self.table.search(vector)
@@ -70,8 +70,22 @@ class Datastore(BaseDatastore):
             .to_list()
         )
 
-        result_content = [result.get("content") for result in results]
-        return result_content
+        return [
+            DataItem(content=result.get("content", ""), source=result.get("source", ""))
+            for result in results
+        ]
+
+    def get_chunk_count(self) -> int:
+        return self.table.count_rows()
+
+    def get_document_count(self) -> int:
+        rows = self.table.to_pandas()
+        if rows.empty:
+            return 0
+
+        sources = rows["source"].fillna("").astype(str)
+        documents = {source.rsplit(":", 1)[0] for source in sources if source}
+        return len(documents)
 
     def _get_table(self) -> Table:
         try:

@@ -1,15 +1,17 @@
-import glob
 import json
 import os
+from pathlib import Path
 from typing import List
 from rag_pipeline import RAGPipeline
 from create_parser import create_parser
 
 from impl import Datastore, Indexer, Retriever, ResponseGenerator, Evaluator
+from util.file_discovery import collect_files
 
 
-DEFAULT_SOURCE_PATH = "sample_data/source/"
-DEFAULT_EVAL_PATH = "sample_data/eval/sample_questions.json"
+ROOT_DIR = Path(__file__).resolve().parent
+DEFAULT_SOURCE_PATH = str(ROOT_DIR)
+DEFAULT_EVAL_PATH = str(ROOT_DIR / "sample_data" / "eval" / "sample_questions.json")
 
 
 def create_pipeline() -> RAGPipeline:
@@ -52,9 +54,7 @@ def main():
 
 
 def get_files_in_directory(source_path: str) -> List[str]:
-    if os.path.isfile(source_path):
-        return [source_path]
-    return glob.glob(os.path.join(source_path, "*"))
+    return collect_files(source_path)
 
 
 if __name__ == "__main__":

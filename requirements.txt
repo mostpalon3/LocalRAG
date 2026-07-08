@@ -4,3 +4,7 @@ ollama>=0.3.0  # For local AI service integration
 lancedb==0.22.0
 docling==2.31.0
 streamlit>=1.37.0
+easyocr>=1.7.2
+pypdfium2>=4.30.0
+filetype>=1.2.0
+charset-normalizer>=3.3.0

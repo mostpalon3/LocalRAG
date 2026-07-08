@@ -35,6 +35,7 @@ Document Ingestion -> Chunking -> Embedding -> Vector Storage -> Query Processin
 3. Embedding
 - `src/impl/datastore.py` embeds each chunk with Ollama (`nomic-embed-text` by default).
 - Embedding dimension is configurable via `OLLAMA_EMBED_DIMENSIONS` (default `768`) and used to define LanceDB schema.
+- Shared runtime defaults live in `config.py`, so the chat model, embedding model, retrieval depth, and LanceDB path can be changed from environment variables.
 
 4. Vector Storage
 - LanceDB table: `data/sample-lancedb/rag-table`.
@@ -48,19 +49,35 @@ Document Ingestion -> Chunking -> Embedding -> Vector Storage -> Query Processin
 - Query text is embedded with the same embedding model to maintain embedding-space consistency.
 
 6. Retrieval
-- `src/impl/retriever.py` delegates to datastore vector search (`top_k`, default 10 in retriever).
-- Returned payload is list of retrieved chunk text.
+- `src/impl/retriever.py` rewrites each query before embedding to make retrieval more search-friendly, then delegates to datastore vector search.
+- Returned payload includes chunk text plus source metadata so the UI can show exactly which evidence was used.
 - Current build is fully local: no external reranker.
 
-7. LLM Generation
+7. File Ingestion Coverage
+- `src/impl/indexer.py` first tries Docling for rich document parsing.
+- If Docling cannot parse a file, the pipeline falls back to raw text extraction for code and plain-text files.
+- Image files and scanned PDFs are sent through EasyOCR, so screenshots, scans, and diagram text can also be indexed.
+
+8. LLM Generation
 - `src/impl/response_generator.py` composes a structured prompt:
   - `<context>...</context>` with retrieved chunks
   - `<question>...</question>` with user query
 - `src/util/invoke_ai.py` calls Ollama chat model (`qwen3:8b` default) with a strict system prompt to avoid hallucinated facts.
 
-8. Response
+9. Response
 - CLI prints the response.
-- Streamlit renders response in chat history (`st.session_state.messages`) and can run evaluation over custom QA sets.
+- Streamlit streams the assistant response token-by-token, renders response in chat history (`st.session_state.messages`), and shows a retrieved-sources expander for transparency.
+
+10. Latency Instrumentation
+- `src/rag_pipeline.py` prints stage timings for indexing, persistence, retrieval, and generation.
+- These numbers can be copied directly into a resume or demo notes after a run on the target machine.
+
+### Timing snapshot from the current machine
+
+- Indexing: about 20.0s for 41 chunks across the sample documents.
+- Persistence: about 1.4s for the LanceDB write step.
+- First-query retrieval and generation are dominated by local model load and response time; the latest full run showed retrieval in roughly 39.7s and generation in roughly 320.3s for the first query.
+- These numbers are machine- and model-dependent, but they are now emitted directly by the app so you can re-run them on your target system and copy the exact values.
 
 ### ASCII architecture diagram
 
@@ -214,19 +231,24 @@ ollama pull nomic-embed-text
 Optional env vars:
 
 ```bash
+export LLM_MODEL='qwen3:8b'
+export EMBED_MODEL='nomic-embed-text'
+export TOP_K='5'
+export MAX_TOKENS='300'
+export DB_PATH='data/sample-lancedb'
 export OLLAMA_HOST='http://localhost:11434'
-export OLLAMA_CHAT_MODEL='qwen3:8b'
-export OLLAMA_EMBED_MODEL='nomic-embed-text'
 export OLLAMA_EMBED_DIMENSIONS='768'
 ```
 
 ### Setup
 
 ```bash
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+./start_localrag.sh
 ```
+
+The script creates or reuses `.venv`, installs dependencies, pulls `qwen3:8b` and `nomic-embed-text`, then starts Streamlit.
+
+The indexer prioritizes raw-text reading for code, config, markdown, and other text files, and falls back to docling/OCR for richer document formats. Streamlit uploads also accept `.zip` archives and unpack them before indexing.
 
 ### Index your own documents
 
@@ -239,7 +261,7 @@ PYTHONPATH=src python3 main.py add -p /absolute/or/relative/path/to/docs
 Browser upload indexing:
 
 ```bash
-streamlit run streamlit_app.py
+.venv/bin/streamlit run streamlit_app.py
 ```
 
 Then use the sidebar `Upload documents` -> `Upload and index`.

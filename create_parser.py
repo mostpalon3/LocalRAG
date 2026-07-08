@@ -15,7 +15,7 @@ def create_parser():
         "--path",
         type=str,
         required=False,
-        help="Path to a directory containing documents to index.",
+        help="Path to a directory or file to index.",
     )
 
     eval_file_arg_parent = argparse.ArgumentParser(add_help=False)
@@ -34,7 +34,7 @@ def create_parser():
         "--path",
         type=str,
         required=False,
-        help="Path to a directory containing documents to index.",
+        help="Path to a directory or file to index.",
     )
 
     parser.add_argument(

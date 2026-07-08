@@ -1,6 +1,6 @@
 *.pyc
 tmp/
 data/
-venv/
+.venv/
 .DS_Store
 .streamlit_uploads/

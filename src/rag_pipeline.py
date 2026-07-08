@@ -1,7 +1,9 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+import time
 from typing import Dict, List, Optional
 from interface import (
+    DataItem,
     BaseDatastore,
     BaseIndexer,
     BaseRetriever,
@@ -25,21 +27,53 @@ class RAGPipeline:
         """Reset the datastore."""
         self.datastore.reset()
 
+    def get_document_count(self) -> int:
+        return self.datastore.get_document_count()
+
+    def get_chunk_count(self) -> int:
+        return self.datastore.get_chunk_count()
+
     def add_documents(self, documents: List[str]) -> None:
         """Index a list of documents."""
+        indexing_started = time.perf_counter()
         items = self.indexer.index(documents)
+        indexing_elapsed = time.perf_counter() - indexing_started
+        print(f"[TIMING] Indexing: {indexing_elapsed:.3f}s")
+
+        persistence_started = time.perf_counter()
         self.datastore.add_items(items)
+        persistence_elapsed = time.perf_counter() - persistence_started
+        print(f"[TIMING] Persistence: {persistence_elapsed:.3f}s")
         print(f"✅ Added {len(items)} items to the datastore.")
 
     def process_query(self, query: str) -> str:
+        return self.process_query_with_details(query).response
+
+    def process_query_with_details(self, query: str) -> "QueryResult":
+        retrieval_started = time.perf_counter()
         search_results = self.retriever.search(query)
+        retrieval_elapsed = time.perf_counter() - retrieval_started
+        print(f"[TIMING] Retrieval: {retrieval_elapsed:.3f}s")
         print(f"✅ Found {len(search_results)} results for query: {query}\n")
 
         for i, result in enumerate(search_results):
-            print(f"🔍 Result {i+1}: {result}\n")
+            print(f"🔍 Result {i+1}: {result.source}\n")
 
+        generation_started = time.perf_counter()
         response = self.response_generator.generate_response(query, search_results)
-        return response
+        generation_elapsed = time.perf_counter() - generation_started
+        print(f"[TIMING] Generation: {generation_elapsed:.3f}s")
+
+        return QueryResult(
+            query=query,
+            retrieved_chunks=search_results,
+            response=response,
+            timings={
+                "retrieval": retrieval_elapsed,
+                "generation": generation_elapsed,
+                "total": retrieval_elapsed + generation_elapsed,
+            },
+        )
 
     def evaluate(
         self, sample_questions: List[Dict[str, str]]
@@ -75,3 +109,11 @@ class RAGPipeline:
         # Evaluate a single question/answer pair.
         response = self.process_query(question)
         return self.evaluator.evaluate(question, response, expected_answer)
+
+
+@dataclass
+class QueryResult:
+    query: str
+    retrieved_chunks: List[DataItem]
+    response: str
+    timings: Dict[str, float]
