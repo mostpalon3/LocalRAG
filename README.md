@@ -1,321 +1,260 @@
-# LocalRag
+# 💬 LocalRAG
 
-One-line summary: a fully local RAG system that indexes documents, retrieves relevant evidence with vector search, and answers/evaluates queries via a browser chat UI and CLI.
+A fully **local** Retrieval-Augmented Generation (RAG) chatbot — no cloud APIs, no data leaving your machine. Ask questions about your own documents using open-source models running entirely on your hardware via [Ollama](https://ollama.com).
 
-![Python 3.13.5](https://img.shields.io/badge/python-3.13.5-blue)
-![License Unspecified](https://img.shields.io/badge/license-unspecified-lightgrey)
-![Last Commit](https://img.shields.io/badge/last%20commit-2026--07--06-blue)
+---
 
-![rag-image](./rag-design-basic.png)
+## ✨ Features
 
-## 2. Demo
-- Fully offline - no cloud API dependency.
+- **100% Local** — all inference runs through Ollama; no data leaves your machine
+- **Multi-format ingestion** — PDFs, images (OCR), source code, plain text, zip archives
+- **Intelligent chunking** — Docling-powered hybrid chunking for PDFs; line-overlap chunking for text/code
+- **Query rewriting** — LLM rewrites your question for better retrieval before searching
+- **Streaming responses** — answers stream token-by-token in the Streamlit UI
+- **Persistent chat history** — multi-session chat with SQLite-backed history, rename & delete support
+- **Dynamic evaluation** — paste or upload a JSON Q&A set and score your RAG pipeline in one click
+- **CLI interface** — scriptable `main.py` for headless indexing, querying, and evaluation
 
-## 3. System Architecture
+---
 
-LocalRag implements this pipeline:
+## 🏗️ Architecture
 
-Document Ingestion -> Chunking -> Embedding -> Vector Storage -> Query Processing -> Retrieval -> LLM Generation -> Response
+```
+  +---------------------------+              +---------------------------+
+  |        WEB USER           |              |        CLI USER           |
+  |  INPUT:                   |              |  INPUT:                   |
+  |  · type a chat query      |              |  $ python main.py query   |
+  |  · upload file / .zip     |              |  $ python main.py add     |
+  |  · paste eval JSON        |              |  $ python main.py run     |
+  |  · set documents path     |              |  $ python main.py reset   |
+  +-------------+-------------+              +-------------+-------------+
+                | (browser)                                | (terminal)
+                v                                          v
+  +-------------+--------------------+     +---------------+----------+   +------------------+
+  |        streamlit_app.py          |     |         main.py          |<--| create_parser.py |
+  |  chat UI · upload · eval panel   |     |     (CLI entry point)    |   | argparse cmds:   |
+  +------+---------------------------+     +---------------+----------+   | add/reset/query/ |
+         |                     |                           |              | evaluate/run     |
+         | save/load           | calls pipeline directly   |              +------------------+
+         | messages            +---------------------------+
+         v                                 |
+  +---------------------------+            v
+  |  chat_history_store.py    |  +---------+-----------------+
+  |  (SQLite persistence)     |  |    src/rag_pipeline.py    |
+  |  data/chat_history.sqlite3|  |    (orchestration layer)  |
+  +---------------------------+  +-----+-------+------+------+
+                                       |       |      |
+                                  index|  query|      | evaluate
+                                       v       v      v
+  +-------------+   +--------------+   +----------+   +------------------+
+  |   Indexer   |   |  Retriever   |   | Generator|   |   Evaluator      |
+  | · Docling   |   | · LLM query  |   | · Ollama |   | · LLM-as-judge   |
+  | · EasyOCR   |   |   rewrite    |   |   LLM    |   | · parallel (x10) |
+  | · hybrid    |   | · vector     |   | · token  |   | · Q&A scoring    |
+  |   chunking  |   |   search     |   |   stream |   | · reasoning tags |
+  +------+------+   +------+-------+   +----+-----+   +--------+---------+
+         |                 |                |                   |
+         v                 |                |                   |
+  +------+------+          |                |                   |
+  |  Datastore  |<---------+----------------+-------------------+
+  | · LanceDB   |
+  | · Ollama    |
+  |   embeddings|
+  +------+------+
+         |
+         v
+  +-------------------------------+
+  | data/sample-lancedb/rag-table |
+  +-------------------------------+
 
-### Stage-by-stage technical flow
-
-1. Document Ingestion
-- Entry points:
-  - CLI: `main.py` (`add`, `run` commands)
-  - UI: `streamlit_app.py` (path-based indexing and upload-and-index)
-- Input is a list of file paths; uploaded files are persisted into `.streamlit_uploads/` before indexing.
-
-2. Chunking
-- `src/impl/indexer.py` uses `DocumentConverter` + `HybridChunker` from Docling.
-- Each chunk is transformed into a `DataItem` with:
-  - `content`: headings + body text
-  - `source`: filename + chunk index
-- This adds provenance metadata while keeping chunk text self-descriptive.
-
-3. Embedding
-- `src/impl/datastore.py` embeds each chunk with Ollama (`nomic-embed-text` by default).
-- Embedding dimension is configurable via `OLLAMA_EMBED_DIMENSIONS` (default `768`) and used to define LanceDB schema.
-- Shared runtime defaults live in `config.py`, so the chat model, embedding model, retrieval depth, and LanceDB path can be changed from environment variables.
-
-4. Vector Storage
-- LanceDB table: `data/sample-lancedb/rag-table`.
-- Schema includes `vector`, `content`, `source`.
-- Upsert behavior is implemented via `merge_insert("source")`, which avoids naive append-only duplicates for the same source key.
-
-5. Query Processing
-- User query enters through:
-  - CLI `query` command, or
-  - Streamlit chat input.
-- Query text is embedded with the same embedding model to maintain embedding-space consistency.
-
-6. Retrieval
-- `src/impl/retriever.py` rewrites each query before embedding to make retrieval more search-friendly, then delegates to datastore vector search.
-- Returned payload includes chunk text plus source metadata so the UI can show exactly which evidence was used.
-- Current build is fully local: no external reranker.
-
-7. File Ingestion Coverage
-- `src/impl/indexer.py` first tries Docling for rich document parsing.
-- If Docling cannot parse a file, the pipeline falls back to raw text extraction for code and plain-text files.
-- Image files and scanned PDFs are sent through EasyOCR, so screenshots, scans, and diagram text can also be indexed.
-
-8. LLM Generation
-- `src/impl/response_generator.py` composes a structured prompt:
-  - `<context>...</context>` with retrieved chunks
-  - `<question>...</question>` with user query
-- `src/util/invoke_ai.py` calls Ollama chat model (`qwen3:8b` default) with a strict system prompt to avoid hallucinated facts.
-
-9. Response
-- CLI prints the response.
-- Streamlit streams the assistant response token-by-token, renders response in chat history (`st.session_state.messages`), and shows a retrieved-sources expander for transparency.
-
-10. Latency Instrumentation
-- `src/rag_pipeline.py` prints stage timings for indexing, persistence, retrieval, and generation.
-- These numbers can be copied directly into a resume or demo notes after a run on the target machine.
-
-### Timing snapshot from the current machine
-
-- Indexing: about 20.0s for 41 chunks across the sample documents.
-- Persistence: about 1.4s for the LanceDB write step.
-- First-query retrieval and generation are dominated by local model load and response time; the latest full run showed retrieval in roughly 39.7s and generation in roughly 320.3s for the first query.
-- These numbers are machine- and model-dependent, but they are now emitted directly by the app so you can re-run them on your target system and copy the exact values.
-
-### ASCII architecture diagram
-
-```text
-                  +-----------------------------+
-                  |      streamlit_app.py       |
-                  |  (chat, upload, evaluation) |
-                  +--------------+--------------+
-                                 |
-                                 v
- +---------+      +--------------------------+      +-------------------+
- | main.py |----->|   src/rag_pipeline.py    |<-----| create_parser.py  |
- | (CLI)   |      | (orchestration layer)    |      | (CLI commands)    |
- +----+----+      +-----+------+-----+-------+      +-------------------+
-      |                 |      |     |
-      | add/reset/query |      |     | evaluate
-      v                 v      v     v
- +-------------+   +---------+  +-----------+   +----------------+
- | Indexer     |   |Retriever|  |Generator  |   | Evaluator      |
- | (Docling)   |   |(vector) |  |(Ollama)   |   |(LLM grading)   |
- +------+------+   +----+----+  +-----+-----+   +--------+-------+
-        |               |             |                  |
-        v               |             |                  |
- +-------------+        |             |                  |
- | Datastore   |<-------+-------------+------------------+
- | (LanceDB +  |
- |  embeddings)|
- +------+------+ 
-        |
-        v
- +-----------------------------+
- | data/sample-lancedb/rag-table|
- +-----------------------------+
+  OUTPUT (Web):  streamed answer + 📄 source chunks → rendered in Streamlit chat
+                 eval score + per-item reasoning → shown in results panel
+  OUTPUT (CLI):  answer printed to stdout · eval score/pass-fail to terminal
 ```
 
-### Why these technologies
+### Components
 
-- LanceDB over ChromaDB
-  - Reason in this codebase: table-like schema control (`pyarrow`), explicit local file path, and predictable merge/upsert path (`merge_insert`).
-  - This aligns with the project goal of local, inspectable storage with simple persistence semantics.
-
-- Ollama over OpenAI API
-  - Reason in this codebase: fully local inference for both chat and embeddings, no cloud API keys, and consistent local deployment behavior for demos/interviews.
-
-- Docling over ad-hoc PDF parsing
-  - Reason in this codebase: integrated document conversion + chunking pipeline with metadata support (`headings`, `origin.filename`).
-
-- Streamlit over a custom frontend stack
-  - Reason in this codebase: minimal glue code from pipeline to usable UI (chat + indexing + evaluation) while preserving one-language (Python) workflow.
-
-## 4. Tech Stack
-
-| Component | Technology | Reason |
+| Component | File | Role |
 |---|---|---|
-| LLM serving | Ollama (`qwen3:8b`) | Local chat inference, no cloud dependency |
-| Embedding model | Ollama (`nomic-embed-text`) | Local embeddings aligned with local-first constraint |
-| Vector DB | LanceDB | File-backed local vector store with explicit schema and merge semantics |
-| Document parsing/chunking | Docling (`DocumentConverter`, `HybridChunker`) | Structured conversion and chunk metadata from document sources |
-| UI layer | Streamlit | Fast path to interactive chat, upload, and evaluation in browser |
+| `RAGPipeline` | `src/rag_pipeline.py` | Orchestrates all stages; timing logs |
+| `Indexer` | `src/impl/indexer.py` | Chunks docs via Docling or line-overlap |
+| `Datastore` | `src/impl/datastore.py` | LanceDB vector store; parallel embedding via Ollama |
+| `Retriever` | `src/impl/retriever.py` | LLM query rewriter → vector search |
+| `ResponseGenerator` | `src/impl/response_generator.py` | Context-grounded answer generation & streaming |
+| `Evaluator` | `src/impl/evaluator.py` | Parallel LLM-as-judge over Q&A pairs |
+| `chat_history_store` | `src/util/chat_history_store.py` | SQLite-backed multi-session chat persistence |
 
-## 5. Core Design Decisions
+---
 
-1. Decision: Keep retrieval fully local and remove hosted reranking.
-- Alternatives Considered: Cohere rerank API, local cross-encoder reranker, hybrid lexical/vector reranking.
-- Why This Choice: The project objective is offline operation with zero cloud API dependency. Current retriever delegates directly to datastore vector search to preserve that property.
-
-2. Decision: Single embedding model for both indexing and querying (`nomic-embed-text`).
-- Alternatives Considered: separate query/document embedding models, OpenAI embedding endpoints.
-- Why This Choice: Shared embedding space reduces mismatch risk and simplifies operational setup. It also avoids additional runtime/services.
-
-3. Decision: Embedding dimensionality is environment-configurable but schema-bound (`OLLAMA_EMBED_DIMENSIONS`, default 768).
-- Alternatives Considered: infer dimensions dynamically per run, hardcode dimensions with no override.
-- Why This Choice: LanceDB schema requires fixed vector size; explicit env configuration makes model swaps possible while keeping schema deterministic.
-
-4. Decision: Chunk payload includes headings in addition to body text.
-- Alternatives Considered: body text only, larger monolithic chunks per page.
-- Why This Choice: Headings add topical context that improves retrieval precision for entity-heavy or section-specific questions.
-
-5. Decision: Use `source` as merge key in datastore upsert (`merge_insert("source")`).
-- Alternatives Considered: append-only writes, synthetic UUID for each chunk.
-- Why This Choice: Source-based merge keeps indexing idempotent for same logical chunk identity and avoids unbounded duplicates from repeated runs.
-
-6. Decision: Evaluate with LLM-as-judge using strict XML tags (`<reasoning>`, `<result>`).
-- Alternatives Considered: exact-string match, semantic similarity-only scoring, external eval service.
-- Why This Choice: Enables qualitative reasoning output with a simple parser (`extract_xml_tag`) and supports near-correct paraphrase detection beyond exact match.
-
-7. Decision: Concurrency in both embedding insertion and evaluation.
-- Alternatives Considered: fully sequential indexing/evaluation.
-- Why This Choice: Network/model-bound calls are parallelized (`ThreadPoolExecutor`) to improve throughput on multi-question eval and multi-item embedding generation.
-
-8. Decision: Streamlit session state as transient application state.
-- Alternatives Considered: DB-backed conversation persistence, stateless request-response only.
-- Why This Choice: Keeps implementation lightweight while supporting real UX requirements (chat history and latest evaluation results) for a resume-grade demo.
-
-## 6. Project Structure
-
-```text
-simple-rag-pipeline/
-├── main.py                         # CLI entrypoint wiring reset/add/query/evaluate commands
-├── create_parser.py                # argparse command definitions and shared CLI args
-├── streamlit_app.py                # browser UI: chat, upload/index, dynamic evaluation
-├── requirements.txt                # runtime dependencies
-├── .gitignore                      # local artifacts ignored in git
-├── rag-design-basic.png            # architecture image used in README
-├── sample_data/
-│   ├── source/                     # sample source docs for indexing
-│   └── eval/
-│       └── sample_questions.json   # sample QA pairs for CLI evaluation
-├── src/
-│   ├── rag_pipeline.py             # orchestration layer for pipeline operations
-│   ├── impl/                       # concrete component implementations
-│   │   ├── datastore.py            # LanceDB + embedding client + vector search
-│   │   ├── indexer.py              # Docling converter/chunker -> DataItem generation
-│   │   ├── retriever.py            # retrieval policy (currently datastore search only)
-│   │   ├── response_generator.py   # prompt assembly and model invocation
-│   │   ├── evaluator.py            # LLM-based correctness evaluator
-│   │   └── __init__.py             # exports concrete implementation classes
-│   ├── interface/                  # abstract interfaces/contracts
-│   │   ├── base_datastore.py       # DataItem model + datastore contract
-│   │   ├── base_indexer.py         # indexer contract
-│   │   ├── base_retriever.py       # retriever contract
-│   │   ├── base_response_generator.py # generator contract
-│   │   ├── base_evaluator.py       # evaluator contract + EvaluationResult model
-│   │   └── __init__.py             # exports interface symbols
-│   └── util/
-│       ├── invoke_ai.py            # Ollama chat wrapper
-│       └── extract_xml.py          # XML tag extraction helper used by evaluator
-└── data/                           # local LanceDB files (generated at runtime)
-```
-
-Grouping summary:
-- Core pipeline: `main.py`, `streamlit_app.py`, `src/rag_pipeline.py`, `create_parser.py`
-- Data layer: `src/impl/datastore.py`, `data/`
-- Interface layer: `src/interface/*`
-- Config/runtime surface: `requirements.txt`, `.gitignore`, environment variables
-
-## 7. Getting Started
+## 🚀 Quick Start
 
 ### Prerequisites
 
-- Python 3.13+
-- Ollama installed and running
+- **Python 3.10+**
+- **[Ollama](https://ollama.com)** installed and running
 
-Pull required models:
+### 1. Clone the repo
 
 ```bash
-ollama pull qwen3:8b
-ollama pull nomic-embed-text
+git clone <your-repo-url>
+cd LocalRag
 ```
 
-Optional env vars:
+### 2. One-command setup & launch
 
 ```bash
-export LLM_MODEL='qwen3:8b'
-export EMBED_MODEL='nomic-embed-text'
-export TOP_K='5'
-export MAX_TOKENS='300'
-export DB_PATH='data/sample-lancedb'
-export OLLAMA_HOST='http://localhost:11434'
-export OLLAMA_EMBED_DIMENSIONS='768'
-```
-
-### Setup
-
-```bash
+chmod +x start_localrag.sh
 ./start_localrag.sh
 ```
 
-The script creates or reuses `.venv`, installs dependencies, pulls `qwen3:8b` and `nomic-embed-text`, then starts Streamlit.
+This script will:
+1. Create a `.venv` virtual environment
+2. Install all dependencies
+3. Pull the default models (`qwen3:8b` + `nomic-embed-text`)
+4. Launch the Streamlit app at `http://localhost:8501`
 
-The indexer prioritizes raw-text reading for code, config, markdown, and other text files, and falls back to docling/OCR for richer document formats. Streamlit uploads also accept `.zip` archives and unpack them before indexing.
-Chat messages are persisted in SQLite at `data/chat_history.sqlite3`, and the UI supports creating and switching between multiple saved chats.
-
-### Index your own documents
-
-CLI path-based indexing:
-
-```bash
-PYTHONPATH=src python3 main.py add -p /absolute/or/relative/path/to/docs
-```
-
-Browser upload indexing:
+### 3. Manual setup (alternative)
 
 ```bash
-.venv/bin/streamlit run streamlit_app.py
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+ollama pull qwen3:8b
+ollama pull nomic-embed-text
+
+streamlit run streamlit_app.py
 ```
 
-Then use the sidebar `Upload documents` -> `Upload and index`.
+---
 
-### Run queries
+## ⚙️ Configuration
 
-CLI query:
+All settings are controlled via **environment variables** (with sensible defaults):
+
+| Variable | Default | Description |
+|---|---|---|
+| `LLM_MODEL` | `qwen3:8b` | Ollama chat model for generation & evaluation |
+| `EMBED_MODEL` | `nomic-embed-text` | Ollama embedding model |
+| `OLLAMA_URL` | `http://localhost:11434` | Ollama server URL |
+| `TOP_K` | `5` | Number of chunks retrieved per query |
+| `MAX_TOKENS` | `300` | Max tokens per chunk (embedding model limit) |
+| `DB_PATH` | `data/sample-lancedb` | Path to the LanceDB vector store |
+| `EMBED_DIMENSIONS` | `768` | Embedding vector size (must match model) |
+
+**Example — swap to a different model:**
 
 ```bash
-PYTHONPATH=src python3 main.py query "Your question"
+LLM_MODEL=llama3.2 EMBED_MODEL=mxbai-embed-large streamlit run streamlit_app.py
 ```
 
-Full pipeline run:
+---
+
+## 📁 Document Support
+
+| Type | Method |
+|---|---|
+| PDF | Docling structural chunking → OCR fallback |
+| Images (PNG, JPG, TIFF, WEBP, …) | EasyOCR text extraction |
+| Source code & plain text | Character-aware line-overlap chunking |
+| Zip archives | Auto-unpacked then indexed |
+| Any other file | Docling → raw text fallback |
+
+---
+
+## 🖥️ Streamlit UI
+
+Open `http://localhost:8501` after launch.
+
+**Sidebar**
+- **New chat** / **🗑️ Delete chat** — create or permanently remove a conversation
+- **Conversation selector** — switch between saved chat sessions
+- **System Info** — live document/chunk counts and current model info
+- **Reset index / Index documents** — manage the vector store
+- **Upload documents** — drag & drop files or `.zip` archives to index
+- **Clear chat** — wipe messages from the current session
+- **Dynamic Evaluation** — paste or upload a JSON Q&A list and score your pipeline
+
+**Main area**
+- Streaming chat interface with source attribution (expander shows retrieved chunks per answer)
+
+---
+
+## 🖱️ CLI Usage
 
 ```bash
-PYTHONPATH=src python3 main.py run
+# Full pipeline: reset DB, index docs, then evaluate
+python main.py run -p ./my_docs -f ./sample_data/eval/sample_questions.json
+
+# Index a directory
+python main.py add -p ./my_docs
+
+# Ask a single question
+python main.py query "What is the refund policy?"
+
+# Reset the vector store
+python main.py reset
+
+# Evaluate with a custom Q&A file
+python main.py evaluate -f ./my_eval.json
 ```
 
-## 8. Performance & Benchmarks
+**Evaluation JSON format:**
 
-Current measured/observed data in this repository state:
+```json
+[
+  {"question": "What is X?", "answer": "X is ..."},
+  {"question": "How does Y work?", "answer": "Y works by ..."}
+]
+```
 
-- Indexed chunk count (sample corpus run): 41 items added to datastore.
-- End-to-end pipeline (`PYTHONPATH=src python3 main.py run`) completed successfully on local setup.
-- No dedicated latency instrumentation is currently implemented in code (no timing middleware/logging hooks).
-- No memory profiling hooks are currently implemented.
+---
 
-Recommended benchmark additions (for rigorous reporting):
+## 📦 Dependencies
 
-- Retrieval latency (P50/P95) for fixed question set
-- Generation latency split by model token count
-- Indexing throughput (chunks/sec)
-- Peak RSS during indexing and evaluation
+| Package | Purpose |
+|---|---|
+| `streamlit` | Web UI |
+| `ollama` | Local LLM & embedding client |
+| `lancedb` | Vector database |
+| `docling` | PDF & document structural chunking |
+| `easyocr` | OCR for images and scanned PDFs |
+| `pypdfium2` | PDF rendering for OCR fallback |
+| `pydantic` | Data validation |
+| `filetype` | MIME-type detection |
+| `charset-normalizer` | Encoding-safe text reading |
 
-## 9. Limitations & Future Improvements
+---
 
-Current limitations:
+## 📂 Project Structure
 
-- Retrieval uses vector search only; no secondary reranking stage.
-- Prompt context can become large because top-k chunks are concatenated without token budgeting.
-- Evaluation relies on LLM-generated XML tags; malformed output can reduce eval stability.
-- CLI defaults still point to sample evaluation file unless explicitly overridden.
+```
+LocalRag/
+├── streamlit_app.py          # Streamlit web UI
+├── main.py                   # CLI entry point
+├── config.py                 # Environment-variable configuration
+├── create_parser.py          # CLI argument parser
+├── requirements.txt
+├── start_localrag.sh         # One-command setup & launch script
+└── src/
+    ├── rag_pipeline.py       # Pipeline orchestrator
+    ├── impl/
+    │   ├── datastore.py      # LanceDB vector store
+    │   ├── indexer.py        # Document chunking & indexing
+    │   ├── retriever.py      # Query rewriting & vector search
+    │   ├── response_generator.py  # LLM response & streaming
+    │   └── evaluator.py      # LLM-as-judge evaluation
+    ├── interface/            # Abstract base classes
+    └── util/
+        ├── chat_history_store.py  # SQLite chat persistence
+        ├── extract_content.py     # OCR, PDF, text extraction
+        ├── file_discovery.py      # Directory walker
+        ├── invoke_ai.py           # Ollama chat wrapper
+        └── extract_xml.py        # XML tag parser
+```
 
-Planned improvements:
+---
 
-- Add optional local reranker (cross-encoder) for improved ordering precision.
-- Implement context-window management (token-aware truncation/selection).
-- Add structured observability (timings, retrieval stats, model call telemetry).
-- Add persistent run artifacts for evaluation history and regression tracking.
+## 📄 License
 
-## 10. What I Learned
-
-- Interface-first design significantly reduces refactor cost when swapping providers (OpenAI -> Ollama, hosted reranker -> local-only retrieval).
-- Retrieval quality depends as much on chunk construction and metadata strategy as on embedding model choice.
-- Offline-first constraints force better dependency discipline and make demos more reproducible.
-- Evaluation pipelines need explicit output contracts (e.g., XML tags) plus robust fallback handling for malformed model outputs.
+MIT — see [LICENSE](LICENSE).
